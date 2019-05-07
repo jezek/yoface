@@ -1,0 +1,6 @@
+[submodule "openface"]
+	path = openface
+	url = https://github.com/cmusatyalab/openface
+[submodule "yoloface"]
+	path = yoloface
+	url = https://github.com/jezek/yoloface
