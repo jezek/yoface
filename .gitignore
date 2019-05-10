@@ -105,3 +105,6 @@ venv.bak/
 
 # sample images
 samples/
+
+# output images
+outputs/
