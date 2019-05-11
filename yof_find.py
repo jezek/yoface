@@ -31,6 +31,7 @@
 import argparse
 import dlib
 import cv2
+import numpy as np
 import openface
 import os
 import sys
@@ -46,14 +47,17 @@ parser.add_argument('--output-dir', type=str, default=None,
                     help='Path to the output directory. If empty no output images will be generated.')
 parser.add_argument('--camera-src', type=int, default=0,
                     help='Source of the camera')
-parser.add_argument('--verbose', default=True,
+parser.add_argument('--verbose', default=False,
                     help='Print more info')
+parser.add_argument('--find-distance', type=float, default=0.6,
+                    help='Similiar face representation squared distance treshold')
 args = parser.parse_args()
 
 
+yolov3_face_detect = yoloface.utils.yolo_dnn_face_detection_model_v3("./yoloface/cfg/yolov3-face.cfg", "./yoloface/model-weights/yolov3-wider_16000.weights") 
+#TODO rename
 align = openface.AlignDlib("./openface/models/dlib/shape_predictor_68_face_landmarks.dat")
 ofnet = cv2.dnn.readNetFromTorch("./openface/models/openface/nn4.small2.v1.t7")
-
 def facenet_face_recognize(image, rect, output_aligned = ""):
     left, top, width, height = rect
     rect = dlib.rectangle(left, top, left + width, top + height)
@@ -71,11 +75,65 @@ def facenet_face_recognize(image, rect, output_aligned = ""):
     # set blob as input
     ofnet.setInput(blob)
     # get representation vector
-    return ofnet.forward(yoloface.utils.get_outputs_names(ofnet))[0][0]
+    return tuple(ofnet.forward(yoloface.utils.get_outputs_names(ofnet))[0][0].tolist())
+
+
+def find_known_faces(input, known, root_input=False):
+    def string_input():
+        if input=='':
+            if not root_input:
+                return "Empty non root input"
+            print("camera has to be done")
+            #TODO camera
+            return
+
+        ainput = os.path.realpath(input)
+        if os.path.isdir(ainput):
+            return "TODO directory crawl"
+        elif os.path.isfile(ainput):
+            image = cv2.imread(ainput)
+            if image.size == 0:
+                return "Input \"{}\" is not a valid image".format(ainput)
+
+            boxes = yolov3_face_detect(image)
+            print('[i] Input image \"{}\": # detected faces: {}'.format(ainput, len(boxes)))
+
+            for bn, box in enumerate(boxes):
+                box = box[:4]
+                rep = facenet_face_recognize(image, box)                
+                if not rep is None:
+                    for knn, known_name in enumerate(known):
+                        for krn, known_rep in enumerate(known[known_name]):
+                            d = np.array(rep) - np.array(known_rep)
+                            sqd = np.dot(d, d)
+                            if sqd < args.find_distance or args.verbose:
+                                print("{};{};{};{}".format(ainput, known_name, box, sqd))
+                
+            
+        else:
+            return "Input \"{}\" is not a directory, or a file".format(ainput)
+        
+        return
+
+    def list_input():
+        for item in input:
+            res = find_known_faces(item, known, root_input)
+            if res:
+                print("[!] Input item \"{}\" returned: {}".format(item, res))
+        return
+
+    input_types = {
+        str:string_input,
+        list:list_input,
+    }
+    if not type(input) in input_types:
+        return "Unknown input type: {}".format(type(input))
+
+    return input_types[type(input)]()
 
 def _main():
-    yolov3_face_detect = yoloface.utils.yolo_dnn_face_detection_model_v3("./yoloface/cfg/yolov3-face.cfg", "./yoloface/model-weights/yolov3-wider_16000.weights") 
 
+    # known_faces{face_name_string:{representation_vector_as_tuple:{full_path_filename_string:(box_tuple,)}}}
     known_faces = {}
 
     if args.face is None:
@@ -99,11 +157,35 @@ def _main():
         if len(boxes) != 1:
             print("[w] Find face image \"{}\" doesn't contain only one face".format(args.face, len(boxes)))
         else:
-            rep = facenet_face_recognize(img, boxes[0][:4]) 
-            if args.verbose:
-                print('[i] Find face image \"{}\": detected face {} representation vector:\n{}'.format(args.face, boxes[0], rep))
+            box = boxes[0][:4]
+            rep = facenet_face_recognize(img, box) 
+            if rep is None:
+                print("[!] Find face image \"{}\": detected face {} can't align for recognition".format(args.face, box))
+            else:
+                if args.verbose:
+                    print('[i] Find face image \"{}\": detected face {} representation vector:\n{}'.format(args.face, box, rep))
 
+                face_name = os.path.splitext(os.path.basename(args.face))[0]
+                if face_name == '':
+                    face_name = args.face 
 
+                if face_name in known_faces:
+                    if rep in known_faces[face_name]:
+                        if os.path.realpath(args.face) in known_faces[face_name][rep]:
+                            known_faces[face_name][rep][os.path.realpath(args.face)]+=(box,)
+                        else:
+                            known_faces[face_name][rep][os.path.realpath(args.face)]=(box,)
+                    else:
+                        known_faces[face_name][rep]={os.path.realpath(args.face):(box,)}
+                else:
+                    known_faces[face_name]={}
+                    known_faces[face_name][rep]={os.path.realpath(args.face):(box,)}
+
+    #print("known_faces: {}".format(known_faces))
+    if len(known_faces) == 0:
+        return "No known faces to find"
+
+    return find_known_faces(args.input, known_faces, root_input=True)
 
 
 if __name__ == '__main__':
