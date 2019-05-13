@@ -31,51 +31,174 @@
 import argparse
 import dlib
 import cv2
+import hashlib
 import numpy as np
 import openface
 import os
+import pickle
 import sys
 import yoloface.utils
 
+# detection models
+# detection_model['model_name'] = function(image)
+detection_models = {
+    'yoloface.yolov3.wider': yoloface.utils.yolo_dnn_face_detection_model_v3("./yoloface/cfg/yolov3-face.cfg", "./yoloface/model-weights/yolov3-wider_16000.weights"),
+}
+
+def openface_align_and_recognice(align_model, recognition_model):
+    ''' returns function(image, rect, output_aligned='') '''
+    aligner = openface.AlignDlib(align_model)
+    facenet = cv2.dnn.readNetFromTorch(recognition_model)
+
+    def facenet_face_recognize(image, rect, output_aligned = ""):
+        left, top, width, height = rect
+        rect = dlib.rectangle(left, top, left + width, top + height)
+        aligned = aligner.align(96, image, rect, landmarkIndices=openface.AlignDlib.OUTER_EYES_AND_NOSE)
+        if aligned is None:
+            return None
+
+        if output_aligned:
+            cv2.imwrite(output_aligned, aligned.astype(np.uint8))
+
+        # Create a 4D blob from a image.
+        blob = cv2.dnn.blobFromImage(aligned, 1.0 / 255, (96, 96), [0, 0, 0], 1, crop=False)
+        # set blob as input
+        facenet.setInput(blob)
+        # get representation vector
+        return tuple(facenet.forward(yoloface.utils.get_outputs_names(facenet))[0][0].tolist())
+
+    # return function
+    return facenet_face_recognize
+
+# recognition_models['model_name'] = function(image, rectangle)
+recognition_models = {
+    'openface.facenet.tiny': openface_align_and_recognice("./openface/models/dlib/shape_predictor_68_face_landmarks.dat", "./openface/models/openface/nn4.small2.v1.t7"),
+}
+
+
 # arguments
-parser = argparse.ArgumentParser()
-parser.add_argument('input', type=str, default='', nargs='*',
-                    help='Path to input file(s). Can be a directory, image file or video file. If no input given, a camera input will be used.')
+parser = argparse.ArgumentParser(
+    formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+)
+parser.add_argument('--verbose', '-v', default=False, action='store_true',
+                    help='Print more info')
 parser.add_argument('--face', type=str, default=None,
                     help='Path to image file with one face to find')
-parser.add_argument('--output-dir', type=str, default=None,
-                    help='Path to the output directory. If empty no output images will be generated.')
 parser.add_argument('--camera-src', type=int, default=0,
                     help='Source of the camera')
-parser.add_argument('--verbose', default=False,
-                    help='Print more info')
 parser.add_argument('--find-distance', type=float, default=0.6,
                     help='Similiar face representation squared distance treshold')
+parser.add_argument('--cache-dir', type=str, default=None,
+                    help='Path to input face cache folder. If provided, cache will be created or used and than updated. Default uses no cache.')
+parser.add_argument('--detection-model', type=str, default='yoloface.yolov3.wider',
+                    choices=detection_models.keys(),
+                    help='Face detection model name')
+parser.add_argument('--recognition-model', type=str, default='openface.facenet.tiny',
+                    choices=recognition_models.keys(),
+                    help='Face recognition model name')
+parser.add_argument('--output-dir', type=str, default=None,
+                    help='Path to the output directory. If empty no output images will be generated.')
+
+parser.add_argument('input', type=str, default='', nargs='*',
+                    help='Path to input file(s). Can be a directory, image file or video file. If no input given, a camera input will be used.')
 args = parser.parse_args()
 
+if args.verbose:
+    print("[i] verbose: {}".format(args.verbose))
 
-yolov3_face_detect = yoloface.utils.yolo_dnn_face_detection_model_v3("./yoloface/cfg/yolov3-face.cfg", "./yoloface/model-weights/yolov3-wider_16000.weights") 
-#TODO rename
-align = openface.AlignDlib("./openface/models/dlib/shape_predictor_68_face_landmarks.dat")
-ofnet = cv2.dnn.readNetFromTorch("./openface/models/openface/nn4.small2.v1.t7")
-def facenet_face_recognize(image, rect, output_aligned = ""):
-    left, top, width, height = rect
-    rect = dlib.rectangle(left, top, left + width, top + height)
-    aligned = align.align(96, image, rect, landmarkIndices=openface.AlignDlib.OUTER_EYES_AND_NOSE)
-    if aligned is None:
-        print("[!] ==> Can't align face {} in image {}".format(rect, output_aligned))
+def imagehashhex(image_array):
+    return hashlib.sha512(image_array.data).hexdigest()
+
+class ImageCache(object):
+    def __init__(self, cache_dir):
+        if os.path.exists(cache_dir):
+            if not os.path.isdir(cache_dir):
+                raise ValueError("Path to cache directory \"{}\" is not a directory".format(cache_dir))
+        else:
+            os.mkdir(cache_dir)
+            if args.verbose:
+                print("[i] Created cache dir: {}".format(cache_dir))
+
+        self.dir = os.path.realpath(cache_dir)
+        self._imagesHashCache = {}
+
+    def get(self, image_array, function, model):
+        fh = imagehashhex(image_array)
+
+        if fh in self._imagesHashCache and function in self._imagesHashCache[fh] and model in self._imagesHashCache[fh][function]:
+            return self._imagesHashCache[fh][function][model]
+
+        pickle_file = os.path.join(self.dir, fh+'.pkl')
+        if os.path.isfile(pickle_file):
+            with open(pickle_file, 'rb') as input:
+                storage = pickle.load(input)
+                self._imagesHashCache[fh] = storage
+                if function in storage and model in storage[function]:
+                    return storage[function][model]
+                
+
         return None
+    
 
-    if output_aligned:
-        cv2.imwrite(output_aligned, aligned.astype(np.uint8))
+    def set(self, image_array, function, model, result):
+        fh = imagehashhex(image_array)
 
-    # Create a 4D blob from a image.
-    blob = cv2.dnn.blobFromImage(aligned, 1.0 / 255, (96, 96),
-                                [0, 0, 0], 1, crop=False)
-    # set blob as input
-    ofnet.setInput(blob)
-    # get representation vector
-    return tuple(ofnet.forward(yoloface.utils.get_outputs_names(ofnet))[0][0].tolist())
+        storage = {}
+        if fh in self._imagesHashCache:
+            storage = self._imagesHashCache[fh]
+
+        if not function in storage:
+            storage[function] = {}
+
+        storage[function][model] = result
+
+        self._imagesHashCache[fh] = storage
+        pickle_file = os.path.join(self.dir, fh+'.pkl')
+        with open(pickle_file, 'wb') as output:
+            pickle.dump(storage, output, pickle.HIGHEST_PROTOCOL)
+
+
+
+# cache initialization
+cache = None
+if not args.cache_dir is None:
+    try:
+        cache = ImageCache(args.cache_dir)
+        if args.verbose:
+            print("[i] Using cache in: {}".format(cache.dir))
+    except Exception as e:
+        print("[!] Creating cache failed: {}".format(e))
+        cache = None
+if cache is None and args.verbose:
+    print("[i] Not using cache")
+
+# uncached and cached face detect functions
+face_detect = detection_models.get(args.detection_model)
+def face_detect_with_cache(image):
+    if cache is None:
+        return face_detect(image)
+
+    cached = cache.get(image, 'face_detect', args.detection_model)
+    if cached is None:
+        res = face_detect(image.copy())
+        cache.set(image, 'face_detect', args.detection_model, res)
+        return res 
+
+    return cached
+
+# uncached and cached face recognition functions
+face_recognize = recognition_models.get(args.recognition_model)
+def face_recognize_with_cache(image, rectangle): 
+    if cache is None:
+        return face_recognize(image)
+
+    cached = cache.get(image, 'face_recognize', args.recognition_model)
+    if cached is None:
+        res = face_recognize(image.copy())
+        cache.set(image, 'face_recognize', args.recognition_model, res)
+        return res 
+
+    return cached
 
 
 def find_known_faces(input, known, root_input=False):
@@ -95,12 +218,12 @@ def find_known_faces(input, known, root_input=False):
             if image.size == 0:
                 return "Input \"{}\" is not a valid image".format(ainput)
 
-            boxes = yolov3_face_detect(image)
+            boxes = face_detect_with_cache(image)
             print('[i] Input image \"{}\": # detected faces: {}'.format(ainput, len(boxes)))
 
             for bn, box in enumerate(boxes):
                 box = box[:4]
-                rep = facenet_face_recognize(image, box)                
+                rep = face_recognize(image, box)                
                 if not rep is None:
                     for knn, known_name in enumerate(known):
                         for krn, known_rep in enumerate(known[known_name]):
@@ -140,7 +263,7 @@ def _main():
         return "No face to find"
     else:
         if args.verbose:
-            print("[i] Face to find: ", args.face)
+            print("[i] Face to find: {}".format(args.face))
 
 
         if not os.path.isfile(args.face):
@@ -150,7 +273,7 @@ def _main():
         if img.size == 0:
             return "Could not load image from {}".format(args.face)
 
-        boxes = yolov3_face_detect(img)
+        boxes = face_detect_with_cache(img)
         if args.verbose:
             print('[i] Find face image \"{}\": # detected faces: {}'.format(args.face, len(boxes)))
 
@@ -158,7 +281,7 @@ def _main():
             print("[w] Find face image \"{}\" doesn't contain only one face".format(args.face, len(boxes)))
         else:
             box = boxes[0][:4]
-            rep = facenet_face_recognize(img, box) 
+            rep = face_recognize(img, box) 
             if rep is None:
                 print("[!] Find face image \"{}\": detected face {} can't align for recognition".format(args.face, box))
             else:
