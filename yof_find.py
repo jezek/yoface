@@ -31,6 +31,7 @@
 import argparse
 import dlib
 import cv2
+import filetype
 import hashlib
 import numpy as np
 import openface
@@ -83,7 +84,7 @@ parser = argparse.ArgumentParser(
 parser.add_argument('--verbose', '-v', default=False, action='store_true',
                     help='Print more info')
 parser.add_argument('--face', type=str, default=None,
-                    help='Path to image file with one face to find')
+                    help='Path to directory or image file. If image, face name will be derived from file name and image has to contain only one face. For directory, face name will be the directory name and images under that folder will be used.')
 parser.add_argument('--camera-src', type=int, default=0,
                     help='Source of the camera')
 parser.add_argument('--find-distance', type=float, default=0.6,
@@ -98,6 +99,8 @@ parser.add_argument('--recognition-model', type=str, default='openface.facenet.t
                     help='Face recognition model name')
 parser.add_argument('--output-dir', type=str, default=None,
                     help='Path to the output directory. If empty no output images will be generated.')
+parser.add_argument('--recursive', '-r', default=False, action='store_true',
+                    help='Recursive input directory crawl')
 
 parser.add_argument('input', type=str, default='', nargs='*',
                     help='Path to input file(s). Can be a directory, image file or video file. If no input given, a camera input will be used.')
@@ -201,6 +204,31 @@ def face_recognize_with_cache(image, rectangle):
     return cached
 
 
+def find_known_faces_in_image(image_path, known):
+    image = cv2.imread(image_path)
+    if image.size == 0:
+        return "Input \"{}\" is not a valid image".format(image_path)
+
+    boxes = face_detect_with_cache(image)
+    print('[i] Input image \"{}\": # detected faces: {}'.format(image_path, len(boxes)))
+
+    for bn, box in enumerate(boxes):
+        box = box[:4]
+        rep = face_recognize(image, box)                
+        if not rep is None:
+            for knn, known_name in enumerate(known):
+                for krn, known_rep in enumerate(known[known_name]):
+                    d = np.array(rep) - np.array(known_rep)
+                    sqd = np.dot(d, d)
+                    if sqd < args.find_distance:
+                        print("{};{};{};{}".format(image_path, known_name, box, sqd))
+                    elif args.verbose:
+                        print("[i] {};{};{}".format(known_name, box, sqd))
+
+def find_known_faces_in_video(video_path, known):
+    #TODO
+    return "TODO video find face"
+
 def find_known_faces(input, known, root_input=False):
     def string_input():
         if input=='':
@@ -212,27 +240,23 @@ def find_known_faces(input, known, root_input=False):
 
         ainput = os.path.realpath(input)
         if os.path.isdir(ainput):
-            return "TODO directory crawl"
+            if root_input or args.recursive:
+                print("[i] looking in {} for input files".format(ainput))
+                return find_known_faces([os.path.join(ainput, file) for file in os.listdir(ainput)], known)
         elif os.path.isfile(ainput):
-            image = cv2.imread(ainput)
-            if image.size == 0:
-                return "Input \"{}\" is not a valid image".format(ainput)
+            kind = filetype.guess(ainput)
+            if kind is None:
+                return "Input \"{}\" is not supported".format(ainput)
+            mime = kind.mime.split("/")[0]
 
-            boxes = face_detect_with_cache(image)
-            print('[i] Input image \"{}\": # detected faces: {}'.format(ainput, len(boxes)))
+            supported = {
+                'image': find_known_faces_in_image,
+                'video': find_known_faces_in_video,
+            }
+            if mime not in supported.keys():
+                return "Input \"{}\" is not supported mime group \"{}\". Only {} are supported".format(ainput, supported.keys())
 
-            for bn, box in enumerate(boxes):
-                box = box[:4]
-                rep = face_recognize(image, box)                
-                if not rep is None:
-                    for knn, known_name in enumerate(known):
-                        for krn, known_rep in enumerate(known[known_name]):
-                            d = np.array(rep) - np.array(known_rep)
-                            sqd = np.dot(d, d)
-                            if sqd < args.find_distance or args.verbose:
-                                print("{};{};{};{}".format(ainput, known_name, box, sqd))
-                
-            
+            return supported[mime](ainput, known)
         else:
             return "Input \"{}\" is not a directory, or a file".format(ainput)
         
@@ -258,53 +282,67 @@ def _main():
 
     # known_faces{face_name_string:{representation_vector_as_tuple:{full_path_filename_string:(box_tuple,)}}}
     known_faces = {}
-
-    if args.face is None:
-        return "No face to find"
-    else:
-        if args.verbose:
-            print("[i] Face to find: {}".format(args.face))
-
-
-        if not os.path.isfile(args.face):
-            return "Find face image path \"{}\" is not a file".format(args.face)
-
-        img = cv2.imread(args.face)
+    def add_known_face_from_image(face_name, image_path):
+        img = cv2.imread(image_path)
         if img.size == 0:
-            return "Could not load image from {}".format(args.face)
+            print("[!] Could not load image from {}".format(image_path))
+            return
 
         boxes = face_detect_with_cache(img)
         if args.verbose:
-            print('[i] Find face image \"{}\": # detected faces: {}'.format(args.face, len(boxes)))
+            print('[i] Find face image \"{}\": # detected faces: {}'.format(image_path, len(boxes)))
 
         if len(boxes) != 1:
-            print("[w] Find face image \"{}\" doesn't contain only one face".format(args.face, len(boxes)))
-        else:
-            box = boxes[0][:4]
-            rep = face_recognize(img, box) 
-            if rep is None:
-                print("[!] Find face image \"{}\": detected face {} can't align for recognition".format(args.face, box))
-            else:
-                if args.verbose:
-                    print('[i] Find face image \"{}\": detected face {} representation vector:\n{}'.format(args.face, box, rep))
+            print("[w] Find face image \"{}\" doesn't contain only one face".format(image_path, len(boxes)))
+            return
 
-                face_name = os.path.splitext(os.path.basename(args.face))[0]
-                if face_name == '':
-                    face_name = args.face 
+        box = boxes[0][:4]
+        rep = face_recognize(img, box) 
+        if rep is None:
+            print("[!] Find face image \"{}\": detected face {} can't align for recognition".format(image_path, box))
+            return
 
-                if face_name in known_faces:
-                    if rep in known_faces[face_name]:
-                        if os.path.realpath(args.face) in known_faces[face_name][rep]:
-                            known_faces[face_name][rep][os.path.realpath(args.face)]+=(box,)
-                        else:
-                            known_faces[face_name][rep][os.path.realpath(args.face)]=(box,)
-                    else:
-                        known_faces[face_name][rep]={os.path.realpath(args.face):(box,)}
+        #if args.verbose:
+        #    print('[i] Find face image \"{}\": detected face {} representation vector:\n{}'.format(image_path, box, rep))
+
+        if face_name in known_faces:
+            if rep in known_faces[face_name]:
+                if os.path.realpath(image_path) in known_faces[face_name][rep]:
+                    known_faces[face_name][rep][os.path.realpath(image_path)]+=(box,)
                 else:
-                    known_faces[face_name]={}
-                    known_faces[face_name][rep]={os.path.realpath(args.face):(box,)}
+                    known_faces[face_name][rep][os.path.realpath(image_path)]=(box,)
+            else:
+                known_faces[face_name][rep]={os.path.realpath(image_path):(box,)}
+        else:
+            known_faces[face_name]={}
+            known_faces[face_name][rep]={os.path.realpath(image_path):(box,)}
+        return
 
-    #print("known_faces: {}".format(known_faces))
+    if not args.face is None:
+        if args.verbose:
+            print("[i] Face to find: {}".format(args.face))
+
+        if os.path.isdir(args.face):
+            face_name = os.path.basename(os.path.realpath(args.face))
+            for possible_face_file in os.listdir(args.face):
+                possible_face_file = os.path.join(os.path.realpath(args.face), possible_face_file)
+                if os.path.isfile(possible_face_file):
+                    kind = filetype.guess(possible_face_file)
+                    if not kind is None and kind.mime.split("/")[0] == 'image':
+                        add_known_face_from_image(face_name, possible_face_file)
+        elif os.path.isfile(args.face):
+            face_name = os.path.splitext(os.path.basename(args.face))[0]
+            if face_name == '':
+                face_name = args.face 
+
+            add_known_face_from_image(face_name, os.path.realpath(args.face))
+        else:
+            print("[!] Face argument \"{}\" is not a file or directory".format(args.face))
+
+
+
+
+    # print("known_faces: {}".format(known_faces))
     if len(known_faces) == 0:
         return "No known faces to find"
 
