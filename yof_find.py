@@ -37,6 +37,7 @@ import numpy as np
 import openface
 import os
 import pickle
+import struct
 import sys
 import yoloface.utils
 
@@ -107,10 +108,10 @@ parser.add_argument('input', type=str, default='', nargs='*',
 args = parser.parse_args()
 
 if args.verbose:
-    print("[i] verbose: {}".format(args.verbose))
+    sys.stderr.write("[i] verbose: {}\n".format(args.verbose))
 
-def imagehashhex(image_array):
-    return hashlib.sha512(image_array.data).hexdigest()
+def imagehashhex(data):
+    return hashlib.sha512(data).hexdigest()
 
 class ImageCache(object):
     def __init__(self, cache_dir):
@@ -125,8 +126,8 @@ class ImageCache(object):
         self.dir = os.path.realpath(cache_dir)
         self._imagesHashCache = {}
 
-    def get(self, image_array, function, model):
-        fh = imagehashhex(image_array)
+    def get(self, data, function, model):
+        fh = imagehashhex(data)
 
         if fh in self._imagesHashCache and function in self._imagesHashCache[fh] and model in self._imagesHashCache[fh][function]:
             return self._imagesHashCache[fh][function][model]
@@ -143,8 +144,8 @@ class ImageCache(object):
         return None
     
 
-    def set(self, image_array, function, model, result):
-        fh = imagehashhex(image_array)
+    def set(self, data, function, model, result):
+        fh = imagehashhex(data)
 
         storage = {}
         if fh in self._imagesHashCache:
@@ -164,16 +165,16 @@ class ImageCache(object):
 
 # cache initialization
 cache = None
-if not args.cache_dir is None:
+if args.cache_dir is not None:
     try:
         cache = ImageCache(args.cache_dir)
         if args.verbose:
-            print("[i] Using cache in: {}".format(cache.dir))
+            sys.stderr.write("[i] Using cache in: {}\n".format(cache.dir))
     except Exception as e:
-        print("[!] Creating cache failed: {}".format(e))
+        sys.stderr.write("[!] Creating cache failed: {}\n".format(e))
         cache = None
 if cache is None and args.verbose:
-    print("[i] Not using cache")
+    sys.stderr.write("[i] Not using cache\n")
 
 # uncached and cached face detect functions
 face_detect = detection_models.get(args.detection_model)
@@ -181,10 +182,12 @@ def face_detect_with_cache(image):
     if cache is None:
         return face_detect(image)
 
-    cached = cache.get(image, 'face_detect', args.detection_model)
+    cached = cache.get(image.data, 'face_detect', args.detection_model)
     if cached is None:
         res = face_detect(image.copy())
-        cache.set(image, 'face_detect', args.detection_model, res)
+        if args.verbose:
+            sys.stderr.write("[i] Caching image faces\n")
+        cache.set(image.data, 'face_detect', args.detection_model, res)
         return res 
 
     return cached
@@ -193,12 +196,16 @@ def face_detect_with_cache(image):
 face_recognize = recognition_models.get(args.recognition_model)
 def face_recognize_with_cache(image, rectangle): 
     if cache is None:
-        return face_recognize(image)
+        return face_recognize(image, rectangle)
 
-    cached = cache.get(image, 'face_recognize', args.recognition_model)
+    
+    ridata = struct.pack("{}l".format(len(rectangle)), *rectangle) + bytes(image.data)
+    cached = cache.get(ridata, 'face_recognize', args.recognition_model)
     if cached is None:
-        res = face_recognize(image.copy())
-        cache.set(image, 'face_recognize', args.recognition_model, res)
+        res = face_recognize(image.copy(), rectangle)
+        if args.verbose:
+            sys.stderr.write("[i] Caching image face representation\n")
+        cache.set(ridata, 'face_recognize', args.recognition_model, res)
         return res 
 
     return cached
@@ -209,21 +216,24 @@ def find_known_faces_in_image(image_path, known):
     if image.size == 0:
         return "Input \"{}\" is not a valid image".format(image_path)
 
+    sys.stderr.write('[i] Input image \"{}\"\n'.format(image_path))
     boxes = face_detect_with_cache(image)
-    print('[i] Input image \"{}\": # detected faces: {}'.format(image_path, len(boxes)))
+    sys.stderr.write('[i] # detected faces: {}\n'.format(len(boxes)))
 
     for bn, box in enumerate(boxes):
         box = box[:4]
-        rep = face_recognize(image, box)                
-        if not rep is None:
+        rep = face_recognize_with_cache(image, box)                
+        if rep is not None:
             for knn, known_name in enumerate(known):
                 for krn, known_rep in enumerate(known[known_name]):
                     d = np.array(rep) - np.array(known_rep)
                     sqd = np.dot(d, d)
+                    if args.verbose:
+                        sys.stderr.write("[i] Comparing face in box {} to {} ({}). Got distance {}\n\t{}\n".format(box, known_name, krn, sqd, known[known_name][known_rep]))
+
                     if sqd < args.find_distance:
-                        print("{};{};{};{}".format(image_path, known_name, box, sqd))
-                    elif args.verbose:
-                        print("[i] {};{};{}".format(known_name, box, sqd))
+                        print("{}\t{}\t{}\t{}".format(image_path, known_name, box, sqd))
+                        break
 
 def find_known_faces_in_video(video_path, known):
     #TODO
@@ -234,14 +244,14 @@ def find_known_faces(input, known, root_input=False):
         if input=='':
             if not root_input:
                 return "Empty non root input"
-            print("camera has to be done")
+            sys.stderr.write("camera has to be done\n")
             #TODO camera
             return
 
         ainput = os.path.realpath(input)
         if os.path.isdir(ainput):
             if root_input or args.recursive:
-                print("[i] looking in {} for input files".format(ainput))
+                sys.stderr.write("[i] looking in {} for input files\n".format(ainput))
                 return find_known_faces([os.path.join(ainput, file) for file in os.listdir(ainput)], known)
         elif os.path.isfile(ainput):
             kind = filetype.guess(ainput)
@@ -266,7 +276,7 @@ def find_known_faces(input, known, root_input=False):
         for item in input:
             res = find_known_faces(item, known, root_input)
             if res:
-                print("[!] Input item \"{}\" returned: {}".format(item, res))
+                sys.stderr.write("[!] Input item \"{}\" returned: {}\n".format(item, res))
         return
 
     input_types = {
@@ -285,25 +295,29 @@ def _main():
     def add_known_face_from_image(face_name, image_path):
         img = cv2.imread(image_path)
         if img.size == 0:
-            print("[!] Could not load image from {}".format(image_path))
+            sys.stderr.write("[!] Could not load image: {}\n".format(image_path))
             return
 
-        boxes = face_detect_with_cache(img)
         if args.verbose:
-            print('[i] Find face image \"{}\": # detected faces: {}'.format(image_path, len(boxes)))
+            sys.stderr.write("[i] Find face image: {}\n".format(image_path))
+
+        boxes = face_detect_with_cache(img)
+
+        if args.verbose:
+            sys.stderr.write("[i] # detected faces: {}\n".format(len(boxes)))
 
         if len(boxes) != 1:
-            print("[w] Find face image \"{}\" doesn't contain only one face".format(image_path, len(boxes)))
+            sys.stderr.write("[w] Find face image \"{}\" doesn't contain only one face\n".format(image_path, len(boxes)))
             return
 
         box = boxes[0][:4]
-        rep = face_recognize(img, box) 
+        rep = face_recognize_with_cache(img, box) 
         if rep is None:
-            print("[!] Find face image \"{}\": detected face {} can't align for recognition".format(image_path, box))
+            sys.stderr.write("[!] Find face image \"{}\": detected face {} can't align for recognition\n".format(image_path, box))
             return
 
         #if args.verbose:
-        #    print('[i] Find face image \"{}\": detected face {} representation vector:\n{}'.format(image_path, box, rep))
+        #    sys.stderr.write("[i] Find face image \"{}\": detected face {} representation vector:\n{}\n".format(image_path, box, rep))
 
         if face_name in known_faces:
             if rep in known_faces[face_name]:
@@ -318,9 +332,9 @@ def _main():
             known_faces[face_name][rep]={os.path.realpath(image_path):(box,)}
         return
 
-    if not args.face is None:
+    if args.face is not None:
         if args.verbose:
-            print("[i] Face to find: {}".format(args.face))
+            sys.stderr.write("[i] Face to find: {}\n".format(args.face))
 
         if os.path.isdir(args.face):
             face_name = os.path.basename(os.path.realpath(args.face))
@@ -328,7 +342,7 @@ def _main():
                 possible_face_file = os.path.join(os.path.realpath(args.face), possible_face_file)
                 if os.path.isfile(possible_face_file):
                     kind = filetype.guess(possible_face_file)
-                    if not kind is None and kind.mime.split("/")[0] == 'image':
+                    if kind is not None and kind.mime.split("/")[0] == 'image':
                         add_known_face_from_image(face_name, possible_face_file)
         elif os.path.isfile(args.face):
             face_name = os.path.splitext(os.path.basename(args.face))[0]
@@ -337,7 +351,7 @@ def _main():
 
             add_known_face_from_image(face_name, os.path.realpath(args.face))
         else:
-            print("[!] Face argument \"{}\" is not a file or directory".format(args.face))
+            sys.stderr.write("[!] Face argument \"{}\" is not a file or directory\n".format(args.face))
 
 
 
