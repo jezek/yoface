@@ -37,6 +37,7 @@ import numpy as np
 import openface
 import os
 import pickle
+import shutil
 import struct
 import sys
 import yoloface.utils
@@ -107,8 +108,10 @@ parser.add_argument('input', type=str, default='', nargs='*',
                     help='Path to input file(s). Can be a directory, image file or video file. If no input given, a camera input will be used.')
 args = parser.parse_args()
 
+
 if args.verbose:
     sys.stderr.write("[i] verbose: {}\n".format(args.verbose))
+    sys.stderr.write("[i] face find distance treshold: {}\n".format(args.find_distance))
 
 def imagehashhex(data):
     return hashlib.sha512(data).hexdigest()
@@ -211,14 +214,16 @@ def face_recognize_with_cache(image, rectangle):
     return cached
 
 
-def find_known_faces_in_image(image_path, known):
-    image = cv2.imread(image_path)
+def find_known_faces_in_image(image_realpath, known):
+    image = cv2.imread(image_realpath)
     if image.size == 0:
-        return "Input \"{}\" is not a valid image".format(image_path)
+        return "Input \"{}\" is not a valid image".format(image_realpath)
 
-    sys.stderr.write('[i] Input image \"{}\"\n'.format(image_path))
+    sys.stderr.write("[i] Input image \"{}\"\n".format(image_realpath))
+
     boxes = face_detect_with_cache(image)
-    sys.stderr.write('[i] # detected faces: {}\n'.format(len(boxes)))
+    if args.verbose:
+        sys.stderr.write("[i] # detected faces: {}\n".format(len(boxes)))
 
     for bn, box in enumerate(boxes):
         box = box[:4]
@@ -232,7 +237,18 @@ def find_known_faces_in_image(image_path, known):
                         sys.stderr.write("[i] Comparing face in box {} to {} ({}). Got distance {}\n\t{}\n".format(box, known_name, krn, sqd, known[known_name][known_rep]))
 
                     if sqd < args.find_distance:
-                        print("{}\t{}\t{}\t{}".format(image_path, known_name, box, sqd))
+                        # found face within search distance
+                        print("{}\t{}\t{}\t{}".format(image_realpath, known_name, box, sqd))
+
+                        if args.output_dir is not None:
+                            out_name, out_ext = os.path.splitext(image_realpath)
+                            out_file = os.path.join(args.output_dir, os.path.basename(out_name)+"_"+imagehashhex(image_realpath)[:10]+out_ext)
+                            try:
+                                shutil.copyfile(image_realpath, out_file)
+                                sys.stderr.write("[i] Saved input image to {}\n".format(out_file))
+                            except IOError as e:
+                                sys.stderr.write("[!] Copy file error: {}\n".format(e))
+                            
                         break
 
 def find_known_faces_in_video(video_path, known):
@@ -243,7 +259,7 @@ def find_known_faces(input, known, root_input=False):
     def string_input():
         if input=='':
             if not root_input:
-                return "Empty non root input"
+                return "[!] Empty non root input"
             sys.stderr.write("camera has to be done\n")
             #TODO camera
             return
@@ -256,7 +272,7 @@ def find_known_faces(input, known, root_input=False):
         elif os.path.isfile(ainput):
             kind = filetype.guess(ainput)
             if kind is None:
-                return "Input \"{}\" is not supported".format(ainput)
+                return "[!] Input \"{}\" is not supported".format(ainput)
             mime = kind.mime.split("/")[0]
 
             supported = {
@@ -264,11 +280,11 @@ def find_known_faces(input, known, root_input=False):
                 'video': find_known_faces_in_video,
             }
             if mime not in supported.keys():
-                return "Input \"{}\" is not supported mime group \"{}\". Only {} are supported".format(ainput, supported.keys())
+                return "[!] Input \"{}\" is not supported mime group \"{}\". Only {} are supported".format(ainput, supported.keys())
 
             return supported[mime](ainput, known)
         else:
-            return "Input \"{}\" is not a directory, or a file".format(ainput)
+            return "[!] Input \"{}\" is not a directory, or a file".format(ainput)
         
         return
 
@@ -284,11 +300,14 @@ def find_known_faces(input, known, root_input=False):
         list:list_input,
     }
     if not type(input) in input_types:
-        return "Unknown input type: {}".format(type(input))
+        return "[!] Unknown input type: {}".format(type(input))
 
     return input_types[type(input)]()
 
 def _main():
+
+    if args.output_dir is not None and not os.path.isdir(args.output_dir):
+        return "[!] Output directory does not exist {}".format(args.output_dir)
 
     # known_faces{face_name_string:{representation_vector_as_tuple:{full_path_filename_string:(box_tuple,)}}}
     known_faces = {}
@@ -358,7 +377,9 @@ def _main():
 
     # print("known_faces: {}".format(known_faces))
     if len(known_faces) == 0:
-        return "No known faces to find"
+        return "[!] No known faces to find"
+
+    sys.stderr.write("[i] Looking for {} in {}\n".format(known_faces.keys(), args.input))
 
     return find_known_faces(args.input, known_faces, root_input=True)
 
