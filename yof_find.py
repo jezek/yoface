@@ -189,7 +189,7 @@ def face_detect_with_cache(image):
     if cached is None:
         res = face_detect(image.copy())
         if args.verbose:
-            sys.stderr.write("[i] Caching image faces\n")
+            sys.stderr.write("[i] Caching image {} detected faces\n".format(imagehashhex(image.data)))
         cache.set(image.data, 'face_detect', args.detection_model, res)
         return res 
 
@@ -202,21 +202,25 @@ def face_recognize_with_cache(image, rectangle):
         return face_recognize(image, rectangle)
 
     
-    ridata = struct.pack("{}l".format(len(rectangle)), *rectangle) + bytes(image.data)
-    cached = cache.get(ridata, 'face_recognize', args.recognition_model)
+    rdata = struct.pack("{}l".format(len(rectangle)), *rectangle)
+    cached = cache.get(image.data, 'face_recognize', args.recognition_model)
     if cached is None:
+        cached = {}
+
+    if not rdata in cached:
         res = face_recognize(image.copy(), rectangle)
+        cached[rdata] = res
+        cache.set(image.data, 'face_recognize', args.recognition_model, cached)
         if args.verbose:
-            sys.stderr.write("[i] Caching image face representation\n")
-        cache.set(ridata, 'face_recognize', args.recognition_model, res)
+            sys.stderr.write("[i] Cached image {} face representation for box {}\n".format(imagehashhex(image.data), rectangle))
         return res 
 
-    return cached
+    return cached[rdata]
 
 
 def find_known_faces_in_image(image_realpath, known):
     image = cv2.imread(image_realpath)
-    if image.size == 0:
+    if image is None or image.size == 0:
         return "Input \"{}\" is not a valid image".format(image_realpath)
 
     sys.stderr.write("[i] Input image \"{}\"\n".format(image_realpath))
@@ -242,7 +246,7 @@ def find_known_faces_in_image(image_realpath, known):
 
                         if args.output_dir is not None:
                             out_name, out_ext = os.path.splitext(image_realpath)
-                            out_file = os.path.join(args.output_dir, os.path.basename(out_name)+"_"+imagehashhex(image_realpath)[:10]+out_ext)
+                            out_file = os.path.join(args.output_dir, os.path.basename(out_name)+"_"+imagehashhex(image.data)[:10]+out_ext)
                             try:
                                 shutil.copyfile(image_realpath, out_file)
                                 sys.stderr.write("[i] Saved input image to {}\n".format(out_file))
@@ -280,7 +284,7 @@ def find_known_faces(input, known, root_input=False):
                 'video': find_known_faces_in_video,
             }
             if mime not in supported.keys():
-                return "[!] Input \"{}\" is not supported mime group \"{}\". Only {} are supported".format(ainput, supported.keys())
+                return "[!] Input \"{}\" is not supported mime group \"{}\". Only {} are supported".format(ainput, mime, supported.keys())
 
             return supported[mime](ainput, known)
         else:

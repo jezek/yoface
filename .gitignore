@@ -105,6 +105,10 @@ venv.bak/
 
 # sample images
 samples/
+fotky/
 
 # output images
 outputs/
+
+#cache
+cache/
