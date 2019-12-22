@@ -3,4 +3,4 @@
 	url = https://github.com/cmusatyalab/openface
 [submodule "yoloface"]
 	path = yoloface
-	url = git@github.com:jezek/yoloface.git
+	url = ../yoloface.git
