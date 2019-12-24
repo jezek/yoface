@@ -42,10 +42,12 @@ import struct
 import sys
 import yoloface.utils
 
+script_path = os.path.dirname(os.path.realpath(sys.argv[0]))
+
 # detection models
 # detection_model['model_name'] = function(image)
 detection_models = {
-    'yoloface.yolov3.wider': yoloface.utils.yolo_dnn_face_detection_model_v3("./yoloface/cfg/yolov3-face.cfg", "./yoloface/model-weights/yolov3-wider_16000.weights"),
+    'yoloface.yolov3.wider': yoloface.utils.yolo_dnn_face_detection_model_v3(os.path.join(script_path, "yoloface/cfg/yolov3-face.cfg"), os.path.join(script_path, "yoloface/model-weights/yolov3-wider_16000.weights")),
 }
 
 def openface_align_and_recognice(align_model, recognition_model):
@@ -75,9 +77,8 @@ def openface_align_and_recognice(align_model, recognition_model):
 
 # recognition_models['model_name'] = function(image, rectangle)
 recognition_models = {
-    'openface.facenet.tiny': openface_align_and_recognice("./openface/models/dlib/shape_predictor_68_face_landmarks.dat", "./openface/models/openface/nn4.small2.v1.t7"),
+    'openface.facenet.tiny': openface_align_and_recognice(os.path.join(script_path, "openface/models/dlib/shape_predictor_68_face_landmarks.dat"), os.path.join(script_path, "openface/models/openface/nn4.small2.v1.t7")),
 }
-
 
 # arguments
 parser = argparse.ArgumentParser(
