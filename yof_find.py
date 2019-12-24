@@ -86,7 +86,7 @@ parser = argparse.ArgumentParser(
 )
 parser.add_argument('--verbose', '-v', default=False, action='store_true',
                     help='Print more info')
-parser.add_argument('--face', type=str, default=None,
+parser.add_argument('--face', '-f', type=str, default=None,
                     help='Path to directory or image file. If image, face name will be derived from file name and image has to contain only one face. For directory, face name will be the directory name and images under that folder will be used.')
 parser.add_argument('--camera-src', type=int, default=0,
                     help='Source of the camera')
@@ -100,7 +100,7 @@ parser.add_argument('--detection-model', type=str, default='yoloface.yolov3.wide
 parser.add_argument('--recognition-model', type=str, default='openface.facenet.tiny',
                     choices=recognition_models.keys(),
                     help='Face recognition model name')
-parser.add_argument('--output-dir', type=str, default=None,
+parser.add_argument('--output-dir', '-o', type=str, default=None,
                     help='Path to the output directory. If empty no output images will be generated.')
 parser.add_argument('--recursive', '-r', default=False, action='store_true',
                     help='Recursive input directory crawl')
