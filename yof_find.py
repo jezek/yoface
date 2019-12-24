@@ -27,7 +27,6 @@
 #                 --output-dir outputs/
 #                 --src 1 
 
-
 import argparse
 import dlib
 import cv2
@@ -42,6 +41,7 @@ import struct
 import sys
 import yoloface.utils
 
+sys.stderr.write("Yo! Find me a face.\n")
 script_path = os.path.dirname(os.path.realpath(sys.argv[0]))
 
 # detection models
